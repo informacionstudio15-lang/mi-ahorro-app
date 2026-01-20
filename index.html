@@ -1,0 +1,218 @@
+<!DOCTYPE html>
+<html lang="es">
+<link rel="manifest" href="manifest.json">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+    <title>Mi Ahorro Mensual</title>
+    <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0/dist/css/bootstrap.min.css" rel="stylesheet">
+    <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/jspdf/2.5.1/jspdf.umd.min.js"></script>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/jspdf-autotable/3.5.23/jspdf.plugin.autotable.min.js"></script>
+    <style>
+        :root { --primary: #2ecc71; --danger: #e74c3c; --dark: #2c3e50; }
+        body { background: #f8f9fa; font-family: 'Segoe UI', sans-serif; padding-bottom: 50px; }
+        .header-app { background: var(--dark); color: white; padding: 20px; border-radius: 0 0 20px 20px; margin-bottom: 20px; }
+        .card-custom { border: none; border-radius: 15px; box-shadow: 0 4px 10px rgba(0,0,0,0.05); margin-bottom: 15px; }
+        .btn-add { border-radius: 10px; font-weight: bold; }
+        .week-box { border-left: 6px solid #3498db; }
+        .negative-warning { background: #fff5f5; border: 1px solid #feb2b2; border-radius: 10px; padding: 10px; }
+        .btn-floating { position: fixed; bottom: 20px; right: 20px; z-index: 1000; border-radius: 50px; padding: 15px 25px; box-shadow: 0 5px 15px rgba(0,0,0,0.2); }
+    </style>
+</head>
+<script>
+if ('serviceWorker' in navigator) {
+  navigator.serviceWorker.register('sw.js');
+}
+</script>
+<body>
+
+<div class="header-app text-center">
+    <small>Balance del Mes</small>
+    <h1 id="total-saved">0.00€</h1>
+    <span class="badge bg-success">Ahorrado</span>
+</div>
+
+<div class="container">
+    <!-- SECCIÓN INGRESOS -->
+    <div class="card card-custom p-3">
+        <h5 class="text-primary">➕ Ingresos</h5>
+        <div class="input-group mb-2">
+            <input type="text" id="inc-concept" class="form-control" placeholder="Concepto">
+            <input type="number" id="inc-amount" class="form-control" placeholder="€">
+            <button class="btn btn-primary" onclick="addItem('income')">OK</button>
+        </div>
+        <div id="list-income" class="small mt-2"></div>
+        <div class="text-end fw-bold mt-2">Total: <span id="total-income">0</span>€</div>
+    </div>
+
+    <!-- SECCIÓN GASTOS FIJOS -->
+    <div class="card card-custom p-3">
+        <h5 class="text-danger">🏠 Gastos Fijos</h5>
+        <div class="input-group mb-2">
+            <input type="text" id="fix-concept" class="form-control" placeholder="Concepto">
+            <input type="number" id="fix-amount" class="form-control" placeholder="€">
+            <button class="btn btn-danger" onclick="addItem('fixed')">OK</button>
+        </div>
+        <div id="list-fixed" class="small mt-2"></div>
+        <div class="text-end fw-bold mt-2">Total Fijos: <span id="total-fixed">0</span>€</div>
+    </div>
+
+    <!-- GASTOS SEMANALES -->
+    <h5 class="mt-4 mb-3">📅 Gastos Semanales (Límite 200€)</h5>
+    <div id="weekly-accordion">
+        <!-- Generado por JS -->
+    </div>
+
+    <div class="card card-custom p-3 mt-4">
+        <h5>Resumen Gráfico</h5>
+        <canvas id="mobileChart"></canvas>
+    </div>
+
+    <div class="mt-4 p-3 text-center">
+        <button class="btn btn-dark w-100 mb-2" onclick="exportPDF()">📥 Descargar Reporte PDF</button>
+        <button class="btn btn-outline-danger btn-sm w-100" onclick="resetData()">Borrar Datos del Mes</button>
+    </div>
+</div>
+
+<script>
+    let db = JSON.parse(localStorage.getItem('budgetAppData')) || {
+        income: [],
+        fixed: [],
+        weeks: [[], [], [], [], []]
+    };
+
+    function save() {
+        localStorage.setItem('budgetAppData', JSON.stringify(db));
+        render();
+    }
+
+    function addItem(type) {
+        const c = document.getElementById(`${type === 'income' ? 'inc' : 'fix'}-concept`);
+        const a = document.getElementById(`${type === 'income' ? 'inc' : 'fix'}-amount`);
+        if(!c.value || !a.value) return;
+        db[type].push({ concept: c.value, amount: parseFloat(a.value) });
+        c.value = ''; a.value = '';
+        save();
+    }
+
+    function addWeekly(idx) {
+        const c = document.getElementById(`w${idx}-concept`);
+        const a = document.getElementById(`w${idx}-amount`);
+        if(!c.value || !a.value) return;
+        db.weeks[idx].push({ concept: c.value, amount: parseFloat(a.value) });
+        c.value = ''; a.value = '';
+        save();
+    }
+
+    function render() {
+        // Ingresos y Fijos
+        ['income', 'fixed'].forEach(type => {
+            const list = document.getElementById(`list-${type}`);
+            const totalSpan = document.getElementById(`total-${type}`);
+            let total = 0;
+            list.innerHTML = db[type].map((item, i) => {
+                total += item.amount;
+                return `<div class="d-flex justify-content-between border-bottom py-1">
+                    <span>${item.concept}</span>
+                    <span class="fw-bold">${item.amount}€</span>
+                </div>`;
+            }).join('');
+            totalSpan.innerText = total.toFixed(2);
+        });
+
+        // Semanas
+        const weeklyContainer = document.getElementById('weekly-accordion');
+        weeklyContainer.innerHTML = '';
+        let totalAllWeeks = 0;
+
+        db.weeks.forEach((week, i) => {
+            const weekSum = week.reduce((s, item) => s + item.amount, 0);
+            totalAllWeeks += weekSum;
+            const remaining = 200 - weekSum;
+            const statusClass = remaining < 0 ? 'text-danger' : 'text-success';
+
+            weeklyContainer.innerHTML += `
+                <div class="card card-custom p-3 week-box mb-3">
+                    <div class="d-flex justify-content-between align-items-center">
+                        <h6 class="m-0">Semana ${i+1}</h6>
+                        <span class="${statusClass} fw-bold">Quedan: ${remaining.toFixed(2)}€</span>
+                    </div>
+                    <div class="input-group input-group-sm mt-2">
+                        <input type="text" id="w${i}-concept" class="form-control" placeholder="Concepto">
+                        <input type="number" id="w${i}-amount" class="form-control" placeholder="€">
+                        <button class="btn btn-outline-primary" onclick="addWeekly(${i})">+</button>
+                    </div>
+                    <div class="mt-2 small">
+                        ${week.map(item => `<div class="d-flex justify-content-between"><span>${item.concept}</span><span>${item.amount}€</span></div>`).join('')}
+                    </div>
+                </div>
+            `;
+        });
+
+        // Balance Final
+        const tInc = db.income.reduce((s, i) => s + i.amount, 0);
+        const tFix = db.fixed.reduce((s, i) => s + i.amount, 0);
+        const saved = tInc - (tFix + totalAllWeeks);
+        document.getElementById('total-saved').innerText = `${saved.toFixed(2)}€`;
+        
+        updateChart(tFix, totalAllWeeks, saved);
+    }
+
+    let myChart;
+    function updateChart(fix, weeks, saved) {
+        const ctx = document.getElementById('mobileChart').getContext('2d');
+        if (myChart) myChart.destroy();
+        myChart = new Chart(ctx, {
+            type: 'pie',
+            data: {
+                labels: ['Fijos', 'Semanales', 'Ahorro'],
+                datasets: [{
+                    data: [fix, weeks, saved > 0 ? saved : 0],
+                    backgroundColor: ['#e74c3c', '#3498db', '#2ecc71']
+                }]
+            }
+        });
+    }
+
+    async function exportPDF() {
+        const { jsPDF } = window.jspdf;
+        const doc = new jsPDF();
+        
+        doc.setFontSize(18);
+        doc.text("REPORTE MENSUAL DE GASTOS", 14, 20);
+        
+        // Tabla de Ingresos
+        const incomeData = db.income.map(i => [i.concept, i.amount + "€"]);
+        doc.autoTable({ head: [['Ingresos', 'Monto']], body: incomeData, startY: 30 });
+
+        // Tabla de Fijos
+        const fixedData = db.fixed.map(i => [i.concept, i.amount + "€"]);
+        doc.autoTable({ head: [['Gastos Fijos', 'Monto']], body: fixedData, startY: doc.lastAutoTable.finalY + 10 });
+
+        // Resumen Final
+        const tInc = db.income.reduce((s, i) => s + i.amount, 0);
+        const tWeeks = db.weeks.flat().reduce((s, i) => s + i.amount, 0);
+        const tFix = db.fixed.reduce((s, i) => s + i.amount, 0);
+        const totalSaved = tInc - (tWeeks + tFix);
+
+        doc.setFontSize(14);
+        doc.text(`Total Ingresos: ${tInc}€`, 14, doc.lastAutoTable.finalY + 10);
+        doc.text(`Total Gastado: ${(tWeeks + tFix)}€`, 14, doc.lastAutoTable.finalY + 20);
+        doc.text(`CONCEPTO AHORRADO: ${totalSaved}€`, 14, doc.lastAutoTable.finalY + 30);
+
+        doc.save("Reporte_Mensual.pdf");
+    }
+
+    function resetData() {
+        if(confirm("¿Estás seguro de borrar todos los datos del mes?")) {
+            db = { income: [], fixed: [], weeks: [[], [], [], [], []] };
+            save();
+        }
+    }
+
+    render();
+</script>
+
+</body>
+</html>
